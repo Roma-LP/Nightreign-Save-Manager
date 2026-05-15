@@ -1,4 +1,7 @@
+using NightreignSaveManager.Models;
+using NightreignSaveManager.Services;
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -8,51 +11,35 @@ namespace NightreignSaveManager
 {
     public partial class MainForm : Form
     {
-        private readonly string appDataPath;
-        private readonly string nightreignPath;
-        private readonly string backupRootPath;
+        private const string RepositoryUrl = "https://github.com/Roma-LP";
 
-        private string? cachedLatestSave;
+        private readonly BackupService _backupService;
 
         public MainForm()
         {
             InitializeComponent();
 
-            appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            _backupService = new BackupService();
 
-            nightreignPath = Path.Combine(appDataPath, "Nightreign");
-
-            backupRootPath = Path.Combine(appDataPath, "NightreignBackups");
-
-            Directory.CreateDirectory(backupRootPath);
+            LoadBackups();
         }
 
         private async void bttn_save_Click(object sender, EventArgs e)
         {
             try
             {
-                if (!Directory.Exists(nightreignPath))
-                {
-                    MessageBox.Show("Папка сохранений Nightreign не найдена.");
-                    return;
-                }
+                Log("Creating backup...");
 
-                int nextVersion = GetNextSaveVersion();
+                BackupInfo backup =
+                    await _backupService.CreateBackupAsync();
 
-                string backupFolderName =
-                    $"Nightreign - SaveV{nextVersion} - {DateTime.Now:yyyy-MM-dd HH-mm-ss}";
+                Log($"Backup created: {backup.Name}");
 
-                string backupPath = Path.Combine(backupRootPath, backupFolderName);
-
-                await CopyDirectoryAsync(nightreignPath, backupPath);
-
-                cachedLatestSave = backupPath;
-
-                MessageBox.Show($"Backup создан:\n{backupFolderName}");
+                LoadBackups();
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Ошибка backup:\n{ex.Message}");
+                Log($"ERROR: {ex.Message}");
             }
         }
 
@@ -60,92 +47,138 @@ namespace NightreignSaveManager
         {
             try
             {
-                string? latestBackup = cachedLatestSave;
-
-                if (string.IsNullOrWhiteSpace(latestBackup) ||
-                    !Directory.Exists(latestBackup))
+                if (listBackups.SelectedItem is not BackupInfo backup)
                 {
-                    latestBackup = FindLatestBackup();
-                }
-
-                if (latestBackup == null)
-                {
-                    MessageBox.Show("Backup не найден.");
+                    Log("No backup selected.");
                     return;
                 }
 
-                if (Directory.Exists(nightreignPath))
-                {
-                    int restoreVersion = GetNextRestoreVersion();
+                Log($"Restoring backup: {backup.Name}");
 
-                    string restoreFolderName =
-                        $"Nightreign - RestoreV{restoreVersion} - {DateTime.Now:yyyy-MM-dd HH-mm-ss}";
+                await _backupService.RestoreBackupAsync(backup);
 
-                    string restorePath = Path.Combine(
-                        backupRootPath,
-                        restoreFolderName);
-
-                    Directory.Move(nightreignPath, restorePath);
-                }
-
-                await CopyDirectoryAsync(latestBackup, nightreignPath);
-
-                MessageBox.Show("Сохранение восстановлено.");
+                Log("Restore completed.");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Ошибка восстановления:\n{ex.Message}");
+                Log($"ERROR: {ex.Message}");
             }
         }
 
-        private int GetNextSaveVersion()
+        private void bttn_deleteSelected_Click(object sender, EventArgs e)
         {
-            var dirs = Directory.GetDirectories(backupRootPath, "Nightreign - SaveV*");
-
-            return dirs.Length + 1;
-        }
-
-        private int GetNextRestoreVersion()
-        {
-            var dirs = Directory.GetDirectories(backupRootPath, "Nightreign - RestoreV*");
-
-            return dirs.Length + 1;
-        }
-
-        private string? FindLatestBackup()
-        {
-            var latest = Directory
-                .GetDirectories(backupRootPath, "Nightreign - SaveV*")
-                .OrderByDescending(d => Directory.GetCreationTime(d))
-                .FirstOrDefault();
-
-            cachedLatestSave = latest;
-
-            return latest;
-        }
-
-        private async Task CopyDirectoryAsync(string sourceDir, string destinationDir)
-        {
-            await Task.Run(() =>
+            try
             {
-                Directory.CreateDirectory(destinationDir);
-
-                foreach (string file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
+                if (listBackups.SelectedItem is not BackupInfo backup)
                 {
-                    string relativePath = Path.GetRelativePath(sourceDir, file);
-
-                    string destinationFile = Path.Combine(destinationDir, relativePath);
-
-                    string? destinationFolder = Path.GetDirectoryName(destinationFile);
-
-                    if (!string.IsNullOrEmpty(destinationFolder))
-                    {
-                        Directory.CreateDirectory(destinationFolder);
-                    }
-
-                    File.Copy(file, destinationFile, true);
+                    Log("No backup selected.");
+                    return;
                 }
-            });
+
+                _backupService.DeleteBackup(backup);
+
+                Log($"Deleted backup: {backup.Name}");
+
+                LoadBackups();
+            }
+            catch (Exception ex)
+            {
+                Log($"ERROR: {ex.Message}");
+            }
+        }
+
+        private void bttn_deleteAll_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                DialogResult result = MessageBox.Show(
+                    "Are you sure you want to delete all backups?",
+                    "Confirm deletion",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+
+                if (result != DialogResult.Yes)
+                {
+                    Log("Delete all operation cancelled.");
+                    return;
+                }
+
+                _backupService.DeleteAllBackups();
+
+                Log("All backups deleted.");
+
+                LoadBackups();
+            }
+            catch (Exception ex)
+            {
+                Log($"ERROR: {ex.Message}");
+            }
+        }
+
+        private void LoadBackups()
+        {
+            IReadOnlyList<BackupInfo> backups =
+                _backupService.GetBackups();
+
+            listBackups.DataSource = backups;
+
+            if (backups.Count > 0)
+            {
+                listBackups.SelectedIndex = 0;
+            }
+        }
+
+        private void Log(string message)
+        {
+            string line =
+                $"[{DateTime.Now:HH:mm:ss}] {message}";
+
+            txtLogs.AppendText(line + Environment.NewLine);
+
+            txtLogs.SelectionStart = txtLogs.Text.Length;
+
+            txtLogs.ScrollToCaret();
+        }
+
+        private void MenuItem_gitRepository_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = RepositoryUrl,
+                    UseShellExecute = true
+                });
+
+                Log("GitHub repository opened.");
+            }
+            catch (Exception ex)
+            {
+                Log($"ERROR: {ex.Message}");
+            }
+        }
+
+        private void MenuItem_clearLogs_Click(object sender, EventArgs e)
+        {
+            txtLogs.Clear();
+        }
+
+        private void MenuItem_openBackupFolder_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = _backupService.BackupRootPath,
+                    UseShellExecute = true
+                });
+
+                Log("Backup folder opened.");
+            }
+            catch (Exception ex)
+            {
+                Log($"ERROR: {ex.Message}");
+            }
         }
     }
 }
